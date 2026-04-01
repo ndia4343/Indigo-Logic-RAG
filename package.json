@@ -1,0 +1,12 @@
+{
+  "name": "indigo-logic-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "dependencies": {
+    "express": "latest",
+    "multer": "latest",
+    "@google/generative-ai": "latest",
+    "xlsx": "latest"
+  }
+}

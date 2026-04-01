@@ -1,0 +1,75 @@
+/* Custom Styles for Indigo Logic Chatbot */
+
+body { 
+    font-family: 'Inter', sans-serif; 
+}
+
+h1, h2, h3, .font-headline { 
+    font-family: 'Manrope', sans-serif; 
+}
+
+.font-body {
+    font-family: 'Inter', sans-serif;
+}
+
+/* Material Icons specific styling */
+.material-symbols-outlined { 
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; 
+    display: inline-block;
+    vertical-align: middle;
+}
+
+/* Custom Scrollbar */
+.custom-scrollbar::-webkit-scrollbar { 
+    width: 6px; 
+}
+
+.custom-scrollbar::-webkit-scrollbar-track { 
+    background: transparent; 
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb { 
+    background: #484848; 
+    border-radius: 10px; 
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #767575;
+}
+
+/* Range Slider Styling */
+.slider-custom::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #bac3ff;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(186, 195, 255, 0.4);
+    transition: transform 0.1s, background 0.1s;
+}
+
+.slider-custom::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+    background: #dee0ff;
+}
+
+.slider-custom::-webkit-slider-thumb:active {
+    transform: scale(1.1);
+    background: #ffffff;
+}
+
+/* Animations */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.message-appear {
+    animation: fadeIn 0.4s ease-out forwards;
+}
+
+/* Textarea auto-resize styling support */
+textarea {
+    min-height: 48px;
+}
