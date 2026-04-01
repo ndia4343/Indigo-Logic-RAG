@@ -5,80 +5,104 @@ import os
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="Indigo Logic | Knowledge Explorer",
+    page_title="Indigo Logic | Precision RAG Engine",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# --- CUSTOM CSS FOR PROFESSIONAL DARK THEME ---
+# --- GOOGLE FONTS & MATERIAL SYMBOLS ---
+st.markdown("""
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+    """, unsafe_allow_html=True)
+
+# --- PROFESSIONAL UI INJECTION (CUSTOM CSS) ---
 st.markdown("""
     <style>
-    /* Main Background */
+    /* Global Styles */
     .stApp {
-        background-color: #0f1116;
+        background: #0d0e10;
         color: #e2e8f0;
+        font-family: 'Inter', sans-serif;
     }
     
-    /* Sidebar Styling */
+    /* Sidebar Overhaul */
     [data-testid="stSidebar"] {
-        background-color: #1a1d23;
-        border-right: 1px solid #2d3748;
+        background-color: #111216;
+        border-right: 1px solid #1f2127;
+        padding-top: 1rem;
     }
     
-    /* Input Fields */
-    .stTextInput>div>div>input {
-        background-color: #2d3748;
-        color: white;
-        border: 1px solid #4a5568;
+    /* Branding */
+    .brand-container {
+        padding: 1.5rem;
+        border-bottom: 1px solid #1f2127;
+        margin-bottom: 2rem;
     }
-    
-    /* Custom Sidebar Headers */
-    .sidebar-header {
-        font-family: 'Inter', sans-serif;
-        font-size: 0.8rem;
-        color: #718096;
-        text-transform: uppercase;
+    .brand-title {
+        font-family: 'Manrope', sans-serif;
+        font-weight: 800;
+        font-size: 1.1rem;
         letter-spacing: 0.05em;
+        color: #fff;
+    }
+    .brand-tag {
+        font-size: 0.65rem;
+        color: #4a5568;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+    }
+
+    /* Message Bubbles - Precise Replication */
+    .chat-container {
+        max-width: 850px;
+        margin: auto;
+    }
+    
+    .msg-bot {
+        background: #16171d;
+        border: 1px solid #23252e;
+        border-radius: 12px;
+        padding: 24px;
+        margin-bottom: 20px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    }
+    
+    .msg-user {
+        background: rgba(37, 99, 235, 0.1);
+        border: 1px solid rgba(37, 99, 235, 0.2);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 20px;
+        text-align: right;
+    }
+
+    /* Sidebar Items */
+    .sidebar-label {
+        font-size: 0.7rem;
+        font-weight: 700;
+        color: #4a5568;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-top: 2rem;
         margin-bottom: 0.5rem;
-        margin-top: 1.5rem;
     }
-    
-    /* Blue Accents */
+
+    /* Glassmorphism Buttons */
     .stButton>button {
-        background-color: #2563eb;
-        color: white;
+        background: linear-gradient(135deg, #1e40af, #2563eb);
         border: none;
-        width: 100%;
-        transition: all 0.3s;
-    }
-    .stButton>button:hover {
-        background-color: #1d4ed8;
-        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
-    }
-    
-    /* Chat Bubbles */
-    .chat-bubble {
-        padding: 1.2rem;
-        border-radius: 0.8rem;
-        margin-bottom: 1rem;
-        line-height: 1.6;
-        font-family: 'Inter', sans-serif;
-    }
-    .user-bubble {
-        background-color: #1e293b;
-        border: 1px solid #334155;
-    }
-    .assistant-bubble {
-        background-color: #111827;
-        border-left: 4px solid #2563eb;
-        border: 1px solid #1f2937;
-        border-left: 4px solid #2563eb;
+        color: white;
+        font-weight: 600;
+        border-radius: 8px;
+        padding: 0.6rem;
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- SESSION STATE INITIALIZATION ---
+# --- SESSION STATE ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "knowledge_base" not in st.session_state:
@@ -86,95 +110,81 @@ if "knowledge_base" not in st.session_state:
 if "processed" not in st.session_state:
     st.session_state.processed = False
 
-# --- SIDEBAR CONFIGURATION ---
+# --- SIDEBAR CONTENT ---
 with st.sidebar:
-    st.markdown('<div class="sidebar-header">AI CONFIGURATION</div>', unsafe_allow_html=True)
-    api_key = st.text_input("Gemini API Key", type="password", help="Enter your key from Google AI Studio")
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.7)
+    st.markdown("""
+        <div class="brand-container">
+            <div class="brand-title">INDIGO LOGIC</div>
+            <div class="brand-tag">PRECISION ML ENGINE</div>
+        </div>
+    """, unsafe_allow_html=True)
     
-    st.markdown('<div class="sidebar-header">DATA INGESTION</div>', unsafe_allow_html=True)
-    uploaded_files = st.file_uploader(
-        "Upload Documents", 
-        type=["csv", "xlsx", "txt", "md"], 
-        accept_multiple_files=True,
-        label_visibility="collapsed"
-    )
+    st.markdown('<p class="sidebar-label">API CONFIGURATION</p>', unsafe_allow_html=True)
+    api_key = st.text_input("Gemini API Key", type="password", label_visibility="collapsed", help="Get your key from AI Studio")
     
-    if st.button("🚀 Process Data"):
+    st.markdown('<p class="sidebar-label">PARAMETERS</p>', unsafe_allow_html=True)
+    temp = st.slider("Core Temperature", 0.0, 1.0, 0.7)
+
+    st.markdown('<p class="sidebar-label">DATA INGESTION</p>', unsafe_allow_html=True)
+    uploaded_files = st.file_uploader("Drop Zone", type=["csv", "xlsx", "txt", "md"], accept_multiple_files=True, label_visibility="collapsed")
+    
+    if st.button("🔄 PROCESS DATA"):
         if uploaded_files:
             combined_context = ""
-            with st.spinner("Indexing knowledge base..."):
+            with st.spinner("Indexing..."):
                 for file in uploaded_files:
-                    filename = file.name
-                    file_ext = filename.split('.')[-1].lower()
-                    
-                    try:
-                        if file_ext == "csv":
-                            df = pd.read_csv(file)
-                            combined_context += f"\n--- DATASET: {filename} ---\n{df.to_csv(index=False)[:80000]}\n"
-                        elif file_ext == "xlsx":
-                            df = pd.read_excel(file)
-                            combined_context += f"\n--- SPREADSHEET: {filename} ---\n{df.to_csv(index=False)[:80000]}\n"
-                        else:
-                            content = file.read().decode("utf-8")
-                            combined_context += f"\n--- DOCUMENT: {filename} ---\n{content}\n"
-                    except Exception as e:
-                        st.error(f"Error parsing {filename}: {e}")
-                
+                    ext = file.name.split('.')[-1].lower()
+                    if ext == "csv" or ext == "xlsx":
+                        df = pd.read_csv(file) if ext == "csv" else pd.read_excel(file)
+                        combined_context += f"\n--- DATA: {file.name} ---\n{df.to_csv(index=False)[:80000]}\n"
+                    else:
+                        combined_context += f"\n--- DOC: {file.name} ---\n{file.read().decode('utf-8')}\n"
                 st.session_state.knowledge_base = combined_context
                 st.session_state.processed = True
-                st.success("Database Updated Successfully!")
+                st.sidebar.success("Database Updated")
         else:
-            st.warning("Please upload files first.")
+            st.sidebar.warning("Upload files first")
 
-# --- MAIN INTERFACE ---
-st.title("Knowledge Explorer")
-st.caption("Indigo Logic Precision ML Engine | Context-Aware RAG Chatbot")
+# --- MAIN CHAT AREA ---
+st.markdown('<h2 style="font-family:Manrope; font-weight:800; letter-spacing:-0.02em;">Knowledge Explorer</h2>', unsafe_allow_html=True)
 
-# Display Messages
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+for msg in st.session_state.messages:
+    if msg["role"] == "user":
+        st.markdown(f'<div class="msg-user">{msg["content"]}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+            <div class="msg-bot">
+                {msg["content"]}
+                <div style="margin-top:15px; padding-top:10px; border-top: 1px solid #23252e; font-size: 0.7rem; color: #4a5568;">
+                    <span class="material-symbols-outlined" style="font-size:12px; vertical-align:middle;">dataset</span> SOURCE: <span style="color:#2563eb">Selected Context</span>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
 
 # Chat Input
 if prompt := st.chat_input("Ask a question about your documents..."):
-    # Show user message
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    st.rerun()
 
-    # Generate response
+# Processing actual LLM call if the last message is from user
+if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
     if not api_key:
-        st.error("Please enter your Gemini API Key in the sidebar.")
+        st.error("API Key Required")
     elif not st.session_state.processed:
-        st.warning("Please upload and 'Process' data before chatting.")
+        st.warning("Please process your data first")
     else:
-        with st.chat_message("assistant"):
-            chat_placeholder = st.empty()
-            with st.spinner("Analyzing context..."):
-                try:
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(
-                        model_name="gemini-2.5-flash", # Fixed to match your specific API account
-                        system_instruction="You are a strict data analysis chatbot. Use the provided Document Context to answer questions. If the answer is not in the context, say 'I cannot find the answer in the provided documents.' Do not halluncinate."
-                    )
-                    
-                    # Create context-aware history for Gemini
-                    history = []
-                    for m in st.session_state.messages[:-1]:
-                        history.append({"role": "user" if m["role"] == "user" else "model", "parts": [m["content"]]})
-                    
-                    # Core prompt with document data
-                    full_query = f"Document Context:\n{st.session_state.knowledge_base}\n\nUser Question: {prompt}"
-                    
-                    chat = model.start_chat(history=history)
-                    response = chat.send_message(full_query, generation_config={"temperature": temperature})
-                    
-                    chat_placeholder.markdown(response.text)
-                    st.session_state.messages.append({"role": "assistant", "content": response.text})
-                except Exception as e:
-                    st.error(f"API Error: {e}")
-
-# Footer
-st.markdown("---")
-st.markdown('<div style="text-align: center; color: #4a5568; font-size: 0.7rem;">Indigo Logic v1.0.0 | Built with Gemini Pro & Streamlit</div>', unsafe_allow_html=True)
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(
+                model_name="gemini-2.5-flash",
+                system_instruction="Strict RAG Mode. Answer ONLY from context. Say 'Answer not found' if missing."
+            )
+            # Concat history
+            history = [{"role": "user" if m["role"] == "user" else "model", "parts": [m["content"]]} for m in st.session_state.messages[:-1]]
+            chat = model.start_chat(history=history)
+            response = chat.send_message(f"Context:\n{st.session_state.knowledge_base}\n\nQuestion: {st.session_state.messages[-1]['content']}")
+            
+            st.session_state.messages.append({"role": "assistant", "content": response.text})
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error: {e}")
