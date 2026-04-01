@@ -187,7 +187,7 @@ if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] 
             currentQuery = f"Reference the following Document Context to answer: \n{st.session_state.knowledge_base}\n\nUser Question: {st.session_state.messages[-1]['content']}"
             
             chat = model.start_chat(history=history)
-            response = chat.send_message(currentQuery, generation_config={"temperature": temperature})
+            response = chat.send_message(currentQuery, generation_config={"temperature": temp})
             
             st.session_state.messages.append({"role": "assistant", "content": response.text})
             st.rerun()
