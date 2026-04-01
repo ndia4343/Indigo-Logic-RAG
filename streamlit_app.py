@@ -155,7 +155,7 @@ if prompt := st.chat_input("Ask a question about your documents..."):
                 try:
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(
-                        model_name="gemini-1.5-flash", # Using 1.5-flash for maximum compatibility
+                        model_name="gemini-2.5-flash", # Fixed to match your specific API account
                         system_instruction="You are a strict data analysis chatbot. Use the provided Document Context to answer questions. If the answer is not in the context, say 'I cannot find the answer in the provided documents.' Do not halluncinate."
                     )
                     
