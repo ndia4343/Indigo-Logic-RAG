@@ -183,7 +183,7 @@ if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] 
         try:
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel(
-                model_name="gemini-2.5-flash",
+                model_name="gemini-1.5-flash",
                 system_instruction="You are an Expert Portfolio Analyst. \n\n1. KNOWLEDGE: CarPrices.csv = UCI Dataset (USD). ecommerce_data.csv = Retail data (USD). \n\n2. RULES: \n- Professional reporting format.\n- Use Dollars ($) automatically for prices. \n- Always provide a SUMMARY TABLE if possible."
             )
             

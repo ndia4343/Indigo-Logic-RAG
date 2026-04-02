@@ -1,6 +1,6 @@
-streamlit
+﻿streamlit
 pandas
-google-generativeai
+google-generativeai>=0.5.2
 openpyxl
 jinja2
 python-dotenv
