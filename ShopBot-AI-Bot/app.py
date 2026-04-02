@@ -87,6 +87,9 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     
     api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or st.text_input("Gemini API Key", type="password")
+    
+    st.markdown("<p class='nav-label'>MODEL SELECTOR</p>", unsafe_allow_html=True)
+    model_choice = st.selectbox("Current Engine:", ["gemini-1.5-flash", "gemini-1.0-pro"], help="If you see a 404 error, switch to 'gemini-1.0-pro'")
 
 # --- MAIN INTERFACE ---
 st.markdown('<div class="header-container"><div class="header-title">ShopBot AI Concierge</div><div style="font-size:0.8rem;">🔌 Database Connected</div></div>', unsafe_allow_html=True)
@@ -112,7 +115,7 @@ if prompt := st.chat_input("Enter your query..."):
         if api_key:
             try:
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                model = genai.GenerativeModel(model_choice)
                 sys_inst = f"""
                 You are ShopBot AI, an Expert E-Commerce Data Analyst.
                 GOAL: Provide 100% accurate answers based ONLY on the context below.
