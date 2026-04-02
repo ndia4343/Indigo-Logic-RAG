@@ -3,230 +3,216 @@ import pandas as pd
 import numpy as np
 import os
 import time
-import requests
 from sentence_transformers import SentenceTransformer
 import faiss
 import google.generativeai as genai
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="1Mart | AI Commerce Assistant",
-    page_icon="🛒",
+    page_title="ShopBot AI | Professional RAG Support",
+    page_icon="🤖",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
-# --- THEME & STYLING ---
+# --- PREMIUM DASHBOARD STYLING (Blue Corporate Theme) ---
 st.markdown("""
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Outfit:wght@600;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
 <style>
-    :root {
-        --primary: #2563eb;       /* Royal Blue */
-        --primary-light: #38bdf8; /* Sky Blue */
-        --primary-dark: #1e3a8a;  /* Deep Blue */
-        --bg: #ffffff;
-        --surface: #f1f5f9;
-        --text: #0f172a;
-    }
-    
+    /* Global Background */
     .stApp {
-        background-color: var(--bg);
-        color: var(--text);
+        background-color: #f8fafc;
+        color: #0f172a;
         font-family: 'Inter', sans-serif;
     }
     
-    /* Sidebar styling */
+    /* Sidebar Overhaul (Dark Blue Sidebar) */
     [data-testid="stSidebar"] {
-        background-color: var(--primary-dark);
-        border-right: 1px solid #e2e8f0;
+        background-color: #0c1e3e;
+        border-right: 1px solid #1e293b;
     }
     
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
-        color: #e2e8f0; /* Ensure sidebar text is white/light on dark blue bg */
+    [data-testid="stSidebar"] * {
+        color: #e2e8f0 !important;
     }
-    
-    /* Headers */
-    h1, h2, h3 {
-        font-family: 'Outfit', sans-serif;
-        color: var(--primary-dark);
-    }
-    
-    .main-title {
-        background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: 800;
-        font-size: 2.5rem;
-        margin-bottom: 0.5rem;
-    }
-    
-    /* Chat bubbles */
-    .chat-bubble {
+
+    /* Professional Header */
+    .header-container {
+        background-color: #1e3a8a;
         padding: 1.5rem;
-        border-radius: 1rem;
-        margin-bottom: 1rem;
-        max-width: 85%;
-        box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        border-radius: 12px;
+        color: white;
+        margin-bottom: 2rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
     }
     
-    .user-bubble {
-        background: var(--surface);
-        color: var(--text);
-        align-self: flex-end;
-        margin-left: auto;
-        border: 1px solid #e2e8f0;
+    .header-title {
+        font-family: 'Manrope', sans-serif;
+        font-weight: 800;
+        font-size: 1.8rem;
+        margin: 0;
+    }
+    
+    .header-tag {
+        font-size: 0.8rem;
+        color: #93c5fd;
+    }
+
+    /* Navigation / Sections */
+    .nav-label {
+        font-size: 0.7rem;
+        font-weight: 700;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-top: 1.5rem;
+    }
+
+    /* Chat Styling */
+    .chat-bubble {
+        padding: 1.2rem;
+        border-radius: 12px;
+        margin-bottom: 1rem;
+        max-width: 80%;
     }
     
     .bot-bubble {
-        background: #ffffff;
-        color: var(--text);
-        border-left: 6px solid var(--primary-light);
+        background: white;
         border: 1px solid #e2e8f0;
-        border-left: 6px solid var(--primary-light);
+        border-left: 5px solid #2563eb;
+        color: #1e293b;
     }
     
-    /* Product card style result */
-    .product-card {
-        background: #ffffff;
-        border: 1px solid var(--primary-light);
-        border-radius: 0.5rem;
+    .user-bubble {
+        background: #2563eb;
+        color: white;
+        margin-left: auto;
+    }
+
+    /* Stats Card */
+    .stats-card {
+        background: #162447;
         padding: 1rem;
-        margin-top: 0.5rem;
-    }
-    
-    .status-badge {
-        font-size: 0.7rem;
-        padding: 0.2rem 0.5rem;
-        border-radius: 1rem;
-        background: var(--primary-light);
-        color: var(--primary-dark);
-        font-weight: 700;
+        border-radius: 8px;
+        border: 1px solid #1f3a93;
+        margin-bottom: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- LOGIC & RAG ENGINE ---
+# --- DATA & RAG LOGIC ---
 @st.cache_resource
-def load_embedding_model():
-    return SentenceTransformer('all-MiniLM-L6-v2')
+def load_models():
+    embedder = SentenceTransformer('all-MiniLM-L6-v2')
+    return embedder
 
 @st.cache_data
-def load_and_process_data(csv_path):
-    if not os.path.exists(csv_path):
-        # Create sample data if it doesn't exist
+def load_data(path):
+    if not os.path.exists(path):
         data = {
             'Product': ['Premium Wireless Headphones', 'Smart Fitness Watch', 'Organic Arabica Coffee', 'Mechanical Gaming Keyboard', 'Ergonomic Office Chair', 'UltraWide Monitor 34"', 'Stainless Steel Water Bottle'],
             'Category': ['Electronics', 'Wearables', 'Grocery', 'Accessories', 'Furniture', 'Electronics', 'Home'],
             'Price': [249.99, 129.50, 18.00, 89.00, 350.00, 499.99, 25.00],
             'Stock Status': ['In Stock', 'In Stock', 'Low Stock', 'Out of Stock', 'In Stock', 'In Stock', 'In Stock'],
-            'Description': [
-                'Noise canceling over-ear headphones with 30h battery life and high fidelity sound.',
-                'Tracks heart rate, steps, and sleep with OLED display and waterproof design.',
-                '100% organic beans sourced from Ethiopia, medium roast with notes of chocolate.',
-                'RGB backlit mechanical keyboard with blue switches and durable aluminum frame.',
-                'Adjustable lumbar support, breathable mesh back, and 4D armrests for long work sessions.',
-                'Immersive 34-inch curved display with 144Hz refresh rate and HDR10 support.',
-                'Double-wall insulated bottle keeps drinks cold for 24h or hot for 12h.'
-            ]
+            'Description': ['Noise canceling headphones.', 'Tracks health.', 'Organic beans.', 'RGB Keyboard.', 'Ergonomic.', '4K Display.', 'Safe and reusable.']
         }
         df = pd.DataFrame(data)
-        df.to_csv(csv_path, index=False)
-        return df
-    return pd.read_csv(csv_path)
-
-@st.cache_resource
-def build_vector_store(_df):
-    model = load_embedding_model()
-    # Combine columns into a searchable blob
-    texts = _df.apply(lambda r: f"Product: {r['Product']} | Category: {r['Category']} | Price: ${r['Price']} | Status: {r['Stock Status']} | Description: {r['Description']}", axis=1).tolist()
-    embeddings = model.encode(texts)
-    
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(np.array(embeddings).astype('float32'))
-    return index, texts
+        df.to_csv(path, index=False)
+    return pd.read_csv(path)
 
 # Initialize
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(BASE_DIR, "ecommerce_sales.csv")
+df = load_data(CSV_PATH)
+embedder = load_models()
 
-df = load_and_process_data(CSV_PATH)
-index, text_documents = build_vector_store(df)
-embedding_model = load_embedding_model()
+# Build FAISS locally
+texts = df.apply(lambda r: f"Item: {r['Product']}, Category: {r['Category']}, Price: ${r['Price']}, Stock: {r['Stock Status']}, Details: {r['Description']}", axis=1).tolist()
+embeddings = embedder.encode(texts)
+index = faiss.IndexFlatL2(embeddings.shape[1])
+index.add(np.array(embeddings).astype('float32'))
 
-# --- SIDEBAR & API CONFIG ---
+# --- SIDEBAR (DASHBOARD STYLE) ---
 with st.sidebar:
-    st.markdown("## 🛒 1Mart Control Panel")
-    st.info("E-Commerce Intelligence Engine powered by RAG.")
+    st.image("https://cdn-icons-png.flaticon.com/512/3081/3081559.png", width=80)
+    st.markdown("<h2 style='margin-bottom:0;'>ShopBot AI</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#93c5fd;font-size:0.8rem;'>Customer Support · RAG Powered</p>", unsafe_allow_html=True)
     
-    # Try to find API key in secrets or env
-    env_api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    st.markdown("<p class='nav-label'>NAVIGATION</p>", unsafe_allow_html=True)
+    st.markdown("💬 Chat\n📂 Upload files\n📜 Chat history\n📊 Analytics")
     
-    if env_api_key:
-        api_key = env_api_key
-        st.success("✅ API Key loaded from system secrets.")
-    else:
-        api_key = st.text_input("Gemini API Key", type="password", help="Enter your Google AI Studio API key for high-quality responses.")
-        if not api_key:
-            st.warning("⚠️ Enter API key to enable AI reasoning.")
+    st.markdown("<p class='nav-label'>KNOWLEDGE BASE</p>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class='stats-card'>
+        <div style='font-size:0.75rem; color:#93c5fd;'>ecommerce_sales.csv</div>
+        <div style='font-size:0.9rem; font-weight:700;'>{len(df)} products indexed</div>
+    </div>
+    """, unsafe_allow_html=True)
     
-    st.markdown("---")
-    st.markdown("### Inventory Stats")
-    st.metric("Total Products", len(df))
-    st.metric("Categories", len(df['Category'].unique()))
+    api_key = st.text_input("Gemini API Key", type="password")
     
-    if st.button("Reset Chat"):
-        st.session_state.messages = []
-        st.rerun()
+    st.markdown("<p class='nav-label'>SYSTEM INFO</p>", unsafe_allow_html=True)
+    st.caption("Model: Gemini 1.5 Flash\nEmbedder: MiniLM-L6-v2\nVector DB: FAISS")
 
-# --- CHAT INTERFACE ---
-st.markdown('<div class="main-title">1Mart AI Concierge</div>', unsafe_allow_html=True)
-st.caption("Ask me about our products, stock status, or recommendations.")
+# --- MAIN CONTENT ---
+st.markdown(f"""
+    <div class="header-container">
+        <div>
+            <div class="header-title">ShopBot AI</div>
+            <div class="header-tag">Customer support · RAG powered</div>
+        </div>
+        <div style="font-size: 0.8rem;">● Online</div>
+    </div>
+""", unsafe_allow_html=True)
 
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm your e-commerce support assistant. I have access to your full product database. How can I help you today?"}]
 
 # Display chat history
-for message in st.session_state.messages:
-    role_class = "user-bubble" if message["role"] == "user" else "bot-bubble"
-    st.markdown(f'<div class="chat-bubble {role_class}">{message["content"]}</div>', unsafe_allow_html=True)
+for msg in st.session_state.messages:
+    cls = "bot-bubble" if msg["role"] == "assistant" else "user-bubble"
+    st.markdown(f'<div class="chat-bubble {cls}">{msg["content"]}</div>', unsafe_allow_html=True)
 
 # Input
-if prompt := st.chat_input("What are you looking for today?"):
+if prompt := st.chat_input("Ask a question about orders or products..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.markdown(f'<div class="chat-bubble user-bubble">{prompt}</div>', unsafe_allow_html=True)
     
-    with st.spinner("Analyzing inventory..."):
-        # 1. Similarity Search
-        query_vector = embedding_model.encode([prompt]).astype('float32')
-        D, I = index.search(query_vector, k=3)
+    with st.spinner("ShopBot AI typing..."):
+        # 1. FAISS Search
+        query_emb = embedder.encode([prompt]).astype('float32')
+        _, I = index.search(query_emb, k=3)
+        context = "\n".join([texts[i] for i in I[0]])
         
-        context = "\n".join([text_documents[idx] for idx in I[0]])
+        # 2. Add Analytical Helpers
+        total_rev = df['Price'].sum()
+        avg_price = df['Price'].mean()
         
-        # 2. Generation
+        # 3. Request LLM
         if api_key:
             try:
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel('gemini-1.5-flash')
+                sys_prompt = f"""
+                You are ShopBot AI, a professional e-commerce support bot.
+                Use the CSV Context and System Stats below to answer queries.
                 
-                system_prompt = f"""
-                You are a professional e-commerce customer support bot for '1Mart'. 
-                Answer the user's question using the provided context. 
-                If the product isn't in the context, be polite and say we don't have it.
-                ALWAYS format prices clearly.
+                System Stats:
+                - Total Inventory Value: ${total_rev:,.2f}
+                - Average Product Price: ${avg_price:,.2f}
+                - Total Products: {len(df)}
                 
-                Context:
+                CSV Context:
                 {context}
                 """
-                
-                response = model.generate_content(prompt + "\n\n(Context provided above)")
-                full_response = response.text
-                
+                response = model.generate_content(f"{sys_prompt}\n\nUser: {prompt}")
+                ans = response.text
             except Exception as e:
-                full_response = f"I found some relevant items, but I'm having trouble generating a detailed response. Error: {str(e)}\n\n**Quick Matches:**\n" + context
+                ans = f"Error: {e}"
         else:
-            # Simple fallback if no API key
-            full_response = "I found the following items that might interest you:\n\n" + context + "\n\n*(Pro-tip: Provide a Gemini API key in the sidebar for a better conversational experience)*"
+            ans = f"Context found:\n{context}\n\n(Tip: Enter API key in sidebar for analytical answers)"
             
-    st.markdown(f'<div class="chat-bubble bot-bubble">{full_response}</div>', unsafe_allow_html=True)
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+    st.markdown(f'<div class="chat-bubble bot-bubble">{ans}</div>', unsafe_allow_html=True)
+    st.session_state.messages.append({"role": "assistant", "content": ans})
