@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import numpy as np
 import os
@@ -9,7 +9,7 @@ import google.generativeai as genai
 # --- PAGE CONFIG ---
 st.set_page_config(
     page_title="ShopBot AI | Smart Sales Concierge",
-    page_icon="🤖",
+    page_icon="ðŸ¤–",
     layout="wide",
 )
 
@@ -89,10 +89,10 @@ with st.sidebar:
     api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or st.text_input("Gemini API Key", type="password")
     
     st.markdown("<p class='nav-label'>MODEL SELECTOR</p>", unsafe_allow_html=True)
-    model_choice = st.selectbox("Current Engine:", ["gemini-1.5-flash", "gemini-1.0-pro"], help="If you see a 404 error, switch to 'gemini-1.0-pro'")
+    model_choice = st.selectbox("Current Engine:", ["gemini-1.0-pro", "gemini-1.5-flash"], help="If you see a 404 error, switch to 'gemini-1.0-pro'")
 
 # --- MAIN INTERFACE ---
-st.markdown('<div class="header-container"><div class="header-title">ShopBot AI Concierge</div><div style="font-size:0.8rem;">🔌 Database Connected</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="header-container"><div class="header-title">ShopBot AI Concierge</div><div style="font-size:0.8rem;">ðŸ”Œ Database Connected</div></div>', unsafe_allow_html=True)
 
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role":"assistant","content":"Greetings! I am ShopBot AI. I've indexed your full store directory. You can ask about item details, pricing, or analytical summaries. How can I assist?"}]
@@ -136,7 +136,7 @@ if prompt := st.chat_input("Enter your query..."):
                 response = model.generate_content(f"{sys_inst}\n\nUSER QUESTION: {prompt}")
                 ans = response.text
             except Exception as e:
-                ans = f"⚠️ Inference Error: {e}"
+                ans = f"âš ï¸ Inference Error: {e}"
         else:
             ans = f"**Search Context Found:**\n{context_matches}\n\n*(PRO-TIP: Provide an API Key in the sidebar for full conversational reasoning!)*"
             
