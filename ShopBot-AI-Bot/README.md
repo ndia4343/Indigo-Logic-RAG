@@ -1,45 +1,23 @@
-# 1Mart-RAG-Bot 🛒🚀
+﻿# ShopBot AI | Smart Sales & Support Bot 🤖🛍️
 
-The **1Mart-RAG-Bot** is an intelligent E-Commerce Sales & Support Assistant that uses a **Retrieval-Augmented Generation (RAG)** architecture. It's designed to provide accurate answers about products, prices, and stock status using a local vector database.
+The **ShopBot AI** (formerly 1Mart) is a professional, high-performance RAG chatbot designed for portfolio-grade demonstrations and real-world e-commerce utility.
 
 ## 🌟 Key Features
-
-- **High-Speed Search:** Uses **FAISS** index for millisecond search over product catalogs.
-- **Natural Language Understanding:** Powered by **Sentence-Transformers** for semantic search.
-- **Professional Replies:** Optimized for **Google Gemini 1.5 Flash** for high-quality, conversational responses.
-- **Premium UI:** Glassmorphism-inspired Streamlit interface with emerald-accented branding.
-- **Portfolio-Ready:** Ready to be deployed and presented to clients as a production-grade AI agent.
-
-## 🛠️ Technical Stack
-
-- **Framework:** Streamlit
-- **Embeddings:** `all-MiniLM-L6-v2` (Local)
-- **Vector Index:** FAISS
-- **LLM:** Google Gemini 1.5 Flash (API-based)
-- **Data Handling:** Pandas & NumPy
+- **High-Accuracy RAG**: Uses **FAISS** index and **Sentence-Transformers** for precise product retrieval.
+- **Embedded Analytics**: Automatically calculates and displays total inventory value and key statistics.
+- **Premium Dashboard**: A sleek, dark-blue professional UX with Material Design icons.
+- **Context-Aware Reasoning**: Integrated with **Google Gemini 1.5 Flash** for deep conversational capabilities.
 
 ## 📦 Requirements
+Install these dependencies:
+`ash
+pip install streamlit pandas sentence-transformers faiss-cpu google-generativeai python-dotenv
+`
 
-Install the dependencies using:
-```bash
-pip install -r requirements.txt
-```
+## 🚀 How to Run
+1. Go to the project folder: \cd ShopBot-AI-Bot\
+2. Run: \streamlit run app.py\
+3. Provide your **Gemini API Key** in the sidebar to activate full AI reasoning.
 
-## 🚀 How to Run Locally
-
-1. Clone this repository.
-2. Navigate to the project directory:
-   ```bash
-   cd 1Mart-RAG-Bot
-   ```
-3. Run the Streamlit application:
-   ```bash
-   streamlit run app.py
-   ```
-4. Enter your **Google Gemini API Key** in the sidebar to enable full conversational capabilities.
-
-## 📝 Data Source
-The application includes a sample `ecommerce_sales.csv` for demonstration. You can replace this with your own product catalog to customize the bot for any e-commerce business.
-
-## ✨ Portfolio Impression
-This project demonstrates the ability to combine local search efficiency with the power of modern LLMs, creating a responsive and reliable e-commerce experience.
+## 💼 Developed for US Portfolio Standards
+Clean code, robust data handling, and professional aesthetics.
