@@ -399,6 +399,18 @@ with col_chat:
                     try:
                         df = st.session_state.df
                         # Simple rule-based Pandas aggregator
+                        
+                        if "top customer" in lower_input:
+                            if 'customer_name' in df.columns:
+                                top_custs = df['customer_name'].value_counts().head(3)
+                                top_str = ", ".join(f"{name} ({count} orders)" for name, count in top_custs.items())
+                                analytical_facts.append(f"Our top customers are: {top_str}.")
+                                
+                        if "popular product" in lower_input or "top product" in lower_input:
+                            if 'products' in df.columns:
+                                top_prods = df['products'].value_counts().head(3).index.tolist()
+                                analytical_facts.append(f"The most popular products are: {', '.join(top_prods)}.")
+                                
                         if any(kw in lower_input for kw in ['total', 'sum', 'count', 'how many', 'revenue', 'customers', 'orders']):
                             if 'country' in df.columns:
                                 for country in df['country'].dropna().unique():
@@ -423,20 +435,26 @@ with col_chat:
                     _, I = st.session_state.index.search(emb, 3)
                     ctx = "\\n".join([st.session_state.chunks[i] for i in I[0] if i != -1])
                     
+                    prompt_ctx = ctx
                     if analytical_facts:
-                        ctx = "Exact calculation results from the database:\\n" + "\\n".join(analytical_facts) + "\\n\\nRelated Context:\\n" + ctx
-                    
-                    if not ctx: ctx = "No relevant context found."
+                        prompt_ctx = "Exact calculation results from the database:\\n" + "\\n".join(analytical_facts) + "\\n\\nRelated Context:\\n" + ctx
                 else:
-                    ctx = "We have 108,300 product and sales records."
+                    prompt_ctx = "We have 108,300 product and sales records."
                 
-                prompt = f"Answer the customer's question using ONLY the provided context.\\nContext:\\n{ctx}\\nQuestion: {user_input}\\nAnswer:"
-                inputs = st.session_state.tok(prompt, return_tensors='pt', max_length=512, truncation=True)
-                with torch.no_grad():
-                    out = st.session_state.llm.generate(**inputs, max_new_tokens=150)
-                ans = st.session_state.tok.decode(out[0], skip_special_tokens=True).strip()
-                if not ans:
-                    ans = "I don't have that information. Please contact 1Mart support."
+                # We skip LLM generation if we have a direct, perfectly formatted analytical fact that completely answers a list-type question,
+                # as FLAN-T5-base struggles heavily with repeating facts properly without tautologies.
+                if analytical_facts and ("top" in lower_input or "popular" in lower_input or "summary" in lower_input):
+                    ans = "\\n\\n".join(analytical_facts)
+                else:
+                    prompt = f"Answer the customer's question using ONLY the provided context.\\nContext:\\n{prompt_ctx}\\nQuestion: {user_input}\\nAnswer:"
+                    inputs = st.session_state.tok(prompt, return_tensors='pt', max_length=512, truncation=True)
+                    with torch.no_grad():
+                        out = st.session_state.llm.generate(**inputs, max_new_tokens=150)
+                    ans = st.session_state.tok.decode(out[0], skip_special_tokens=True).strip()
+                    if analytical_facts:
+                        ans = "📊 **Dashboard Insights:**\\n" + "\\n".join(analytical_facts) + "\\n\\n" + ans
+                    if not ans or ans == "I don't have that information.":
+                        ans = "I don't have that information. Please contact 1Mart support."
                 
         st.session_state.messages.append({"role": "bot", "content": ans, "time": "09:02"})
         st.rerun()
