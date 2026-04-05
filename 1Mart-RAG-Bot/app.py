@@ -1,564 +1,461 @@
+"""
+1Mart ShopAI — Streamlit RAG Chatbot
+Fixed: total revenue, top customers, currency symbols, basic math
+"""
+
+import os, json, re, tempfile
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
-import re
-import torch
 import faiss
 from sentence_transformers import SentenceTransformer
 from transformers import T5ForConditionalGeneration, T5Tokenizer
-from io import BytesIO
+import torch
+
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(page_title="ShopAI – 1Mart", page_icon="🛒", layout="wide")
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+CHUNK_SIZE    = 300
+CHUNK_OVERLAP = 50
+MODEL_NAME    = "google/flan-t5-base"
+EMBEDDER_NAME = "all-MiniLM-L6-v2"
+DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fmt_currency(value, symbol="$"):
+    try:
+        return f"{symbol}{float(value):,.2f}"
+    except (ValueError, TypeError):
+        return f"{symbol}{value}"
+
+
+def chunk_text(text, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
+    words = text.split()
+    step  = max(size - overlap, 1)
+    return [" ".join(words[i:i+size])
+            for i in range(0, len(words), step) if words[i:i+size]]
+
+
+def create_text_blob(row):
+    return (
+        f"Customer {row.get('customer_name','N/A')} from {row.get('country','N/A')} purchased "
+        f"{row.get('quantity','N/A')} unit(s) of {row.get('product','N/A')} "
+        f"for {fmt_currency(row.get('price', 0))} each. "
+        f"Total order value was {fmt_currency(row.get('order_value', 0))}. "
+        f"Transaction ID: {row.get('order_id','N/A')} on {row.get('date','N/A')}."
+    )
+
+
+def parse_tabular(filepath):
+    ext = filepath.rsplit(".", 1)[-1].lower()
+    try:
+        if ext == "csv":             df = pd.read_csv(filepath)
+        elif ext in ("xlsx","xlsm"): df = pd.read_excel(filepath, engine="openpyxl")
+        elif ext == "xls":           df = pd.read_excel(filepath, engine="xlrd")
+        else: return []
+    except Exception as e:
+        st.warning(f"Could not read {filepath}: {e}"); return []
+    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+    df = df.fillna("N/A")
+    return [" | ".join(f"{c.replace('_',' ').title()}: {v}" for c, v in row.items())
+            for _, row in df.iterrows()]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data-aware query handler  ← KEY FIX for "total revenue" / "top customers"
+# ─────────────────────────────────────────────────────────────────────────────
+
+def try_data_query(query: str, df: pd.DataFrame):
+    """Answer analytics questions directly from the dataframe — no LLM needed."""
+    if df is None or df.empty:
+        return None
+
+    q = query.lower().strip()
+
+    # Normalise column names
+    df = df.copy()
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+    # ── Total revenue ─────────────────────────────────────────────────────────
+    if any(k in q for k in ["total revenue", "overall revenue", "sum of revenue",
+                              "total sales", "overall sales", "total order value"]):
+        if "order_value" in df.columns:
+            total = pd.to_numeric(df["order_value"], errors="coerce").sum()
+            return f"The total revenue is ${total:,.2f}"
+
+    # ── Average order value ───────────────────────────────────────────────────
+    if any(k in q for k in ["average order", "avg order", "mean order",
+                              "average revenue", "avg revenue"]):
+        if "order_value" in df.columns:
+            avg = pd.to_numeric(df["order_value"], errors="coerce").mean()
+            return f"The average order value is ${avg:,.2f}"
+
+    # ── Total orders count ────────────────────────────────────────────────────
+    if any(k in q for k in ["how many orders", "total orders", "number of orders",
+                              "count of orders", "order count"]):
+        return f"There are {len(df):,} total orders in the dataset."
+
+    # ── Top country by orders ─────────────────────────────────────────────────
+    if any(k in q for k in ["which country", "top country", "most orders",
+                              "highest orders", "country has most"]):
+        if "country" in df.columns:
+            top = df["country"].value_counts().head(3)
+            lines = [f"{i+1}. {c} — {n:,} orders" for i,(c,n) in enumerate(top.items())]
+            return "Top countries by number of orders:\n" + "\n".join(lines)
+
+    # ── Top country by revenue ────────────────────────────────────────────────
+    if any(k in q for k in ["country by revenue", "highest revenue country",
+                              "most revenue", "top revenue country"]):
+        if "country" in df.columns and "order_value" in df.columns:
+            df["order_value"] = pd.to_numeric(df["order_value"], errors="coerce")
+            top = df.groupby("country")["order_value"].sum().sort_values(ascending=False).head(3)
+            lines = [f"{i+1}. {c} — ${v:,.2f}" for i,(c,v) in enumerate(top.items())]
+            return "Top countries by revenue:\n" + "\n".join(lines)
+
+    # ── Orders / revenue from a specific country ──────────────────────────────
+    country_match = re.search(
+        r"(orders?|sales?|revenue).{0,15}(from|in|for)\s+([a-zA-Z\s]+?)(\?|$)", q
+    )
+    if country_match and "country" in df.columns:
+        country_name = country_match.group(3).strip().title()
+        filtered = df[df["country"].str.title() == country_name]
+        if not filtered.empty:
+            rev = pd.to_numeric(filtered["order_value"], errors="coerce").sum()
+            return (f"{country_name} has {len(filtered):,} orders "
+                    f"with total revenue of ${rev:,.2f}.")
+        else:
+            return f"No orders found for '{country_name}' in the dataset."
+
+    # ── Most popular product ──────────────────────────────────────────────────
+    if any(k in q for k in ["popular product", "top product", "best selling",
+                              "most ordered", "most sold"]):
+        if "product" in df.columns:
+            top = df["product"].value_counts().head(3)
+            lines = [f"{i+1}. {p} — {n:,} orders" for i,(p,n) in enumerate(top.items())]
+            return "Most popular products:\n" + "\n".join(lines)
+
+    # ── Revenue for a specific product ────────────────────────────────────────
+    product_rev = re.search(
+        r"(revenue|sales|value).{0,15}(of|for)\s+([a-zA-Z0-9\s]+?)(\?|$)", q
+    )
+    if product_rev and "product" in df.columns:
+        prod_name = product_rev.group(3).strip().title()
+        filtered  = df[df["product"].str.title().str.contains(prod_name, na=False)]
+        if not filtered.empty:
+            rev = pd.to_numeric(filtered["order_value"], errors="coerce").sum()
+            return (f"{prod_name} has {len(filtered):,} orders "
+                    f"with total revenue of ${rev:,.2f}.")
+
+    # ── Top customers ─────────────────────────────────────────────────────────
+    if any(k in q for k in ["top customer", "best customer", "highest spending",
+                              "most valuable customer", "who are top"]):
+        if "customer_name" in df.columns and "order_value" in df.columns:
+            df["order_value"] = pd.to_numeric(df["order_value"], errors="coerce")
+            top = df.groupby("customer_name")["order_value"].sum().sort_values(ascending=False).head(3)
+            lines = [f"{i+1}. {c} — ${v:,.2f}" for i,(c,v) in enumerate(top.items())]
+            return "Top customers by total spend:\n" + "\n".join(lines)
+
+    return None  # Not a data question — fall through to LLM
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Simple arithmetic handler
+# ─────────────────────────────────────────────────────────────────────────────
 
 def try_math(query: str):
-    """Detect simple arithmetic in query and compute directly."""
-    q = query.lower().strip()
-    numbers = re.findall(r"\d+(?:[,\d]*)?(?:\.\d+)?", q.replace(",", ""))
-    nums = [float(n) for n in numbers if n]
-
-    if not nums: return None
-
-    if any(k in q for k in ["sum", "total", "add", "plus", "+"]) and "revenue" not in q and "products" not in q:
-        result = sum(nums)
-        return f"The total is ${result:,.2f}" if len(nums) > 1 else None
-    if any(k in q for k in ["multiply", "times", "product", "*", "×"]) and "popular product" not in q:
-        result = nums[0]
-        for n in nums[1:]: result *= n
-        return f"The result is ${result:,.2f}"
-    if any(k in q for k in ["subtract", "minus", "difference", "-"]):
-        result = nums[0] - sum(nums[1:])
-        return f"The result is ${result:,.2f}"
-    if any(k in q for k in ["divide", "divided by", "/"]):
-        if len(nums) >= 2 and nums[1] != 0:
-            result = nums[0] / nums[1]
-            return f"The result is {result:,.4f}"
-    if any(k in q for k in ["average", "avg", "mean"]):
-        result = sum(nums) / len(nums)
-        return f"The average is ${result:,.2f}"
-    if "%" in q or "percent" in q:
-        if len(nums) >= 2:
-            result = (nums[0] / nums[1]) * 100
-            return f"{result:.2f}%"
+    q    = query.lower().strip()
+    nums = [float(n.replace(",", ""))
+            for n in re.findall(r"\d[\d,]*(?:\.\d+)?", q)]
+    if not nums:
+        return None
+    if any(k in q for k in ["sum", "add", "plus", "+"]) and len(nums) > 1:
+        return f"The total is ${sum(nums):,.2f}"
+    if any(k in q for k in ["multiply", "times", "×"]) and len(nums) > 1:
+        r = nums[0]
+        for n in nums[1:]: r *= n
+        return f"The result is ${r:,.2f}"
+    if any(k in q for k in ["subtract", "minus", "difference"]) and len(nums) > 1:
+        return f"The result is ${nums[0] - sum(nums[1:]):,.2f}"
+    if any(k in q for k in ["divide", "divided by"]) and len(nums) >= 2 and nums[1] != 0:
+        return f"The result is {nums[0] / nums[1]:,.4f}"
+    if any(k in q for k in ["average", "avg", "mean"]) and len(nums) > 1:
+        return f"The average is ${sum(nums)/len(nums):,.2f}"
+    if ("%" in q or "percent" in q) and len(nums) >= 2:
+        return f"{(nums[0]/nums[1])*100:.2f}%"
     return None
 
+
 def format_currency_in_answer(text: str) -> str:
-    """Adds $ before bare numbers near revenue/price/value keywords."""
-    text = re.sub(
-        r"(?i)(revenue|price|cost|value|total|amount|order)[\s:]*([\$£€]?)(\d[\d,]*(?:\.\d{1,2})?)",
+    return re.sub(
+        r"(?i)(revenue|price|cost|value|total|amount|order)[\s:]*([$£€]?)(\d[\d,]*(?:\.\d{1,2})?)",
         lambda m: f"{m.group(1)} ${m.group(3)}" if not m.group(2) else m.group(0),
         text
     )
-    return text
-
-st.set_page_config(page_title="1Mart | ShopAI", page_icon="🛒", layout="wide")
-
-# --- CSS Styling strictly matching the 1Mart mockup ---
-st.markdown("""
-<style>
-/* Main configuration */
-.stApp {
-    background-color: #ffffff;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    color: #333333;
-}
-/* Header */
-.top-header {
-    background-color: #6C3011;
-    color: white;
-    padding: 1.5rem 2rem;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-top: -3.5rem;
-    margin-left: -4rem;
-    margin-right: -4rem;
-    margin-bottom: 2rem;
-}
-.header-left .logo {
-    font-size: 1.8rem;
-    font-weight: 500;
-    margin-bottom: -2px;
-}
-.header-left .sublogo {
-    font-size: 0.9rem;
-    color: #e0b49f;
-}
-.powered-btn {
-    background-color: #f7931e;
-    color: #fff;
-    padding: 0.5rem 1.2rem;
-    border-radius: 20px;
-    font-size: 0.8rem;
-    font-weight: bold;
-}
-
-/* Sidebar Styling */
-[data-testid="stSidebar"] {
-    background-color: #ffffff !important;
-    border-right: none;
-}
-.sys-status-table {
-    width: 100%;
-    font-size: 0.85rem;
-    margin-top: 5px;
-    margin-bottom: 2rem;
-}
-.sys-status-table td {
-    padding: 6px 0;
-}
-.sys-status-table td:nth-child(2) {
-    text-align: right;
-    color: #eb5e28;
-}
-
-.upload-box {
-    text-align: center;
-    font-size: 0.8rem;
-    color: #555;
-    margin: 1rem 0;
-}
-.rag-notice {
-    background-color: #fdf3eb;
-    color: #a45a3d;
-    padding: 1.2rem;
-    font-size: 0.8rem;
-    margin-top: 2rem;
-    line-height: 1.4;
-}
-.build-kb-btn button {
-    background-color: #ea6c2c !important;
-    color: white !important;
-    width: 100%;
-    border-radius: 5px;
-    font-weight: 600;
-    border: none;
-    padding: 0.5rem 0;
-}
-
-/* Chat bubble styling */
-.chat-row {
-    display: flex;
-    align-items: flex-start;
-    margin-bottom: 1.5rem;
-}
-.chat-bot {
-    flex-direction: row;
-}
-.chat-user {
-    flex-direction: row-reverse;
-}
-.avatar {
-    width: 32px;
-    height: 32px;
-    border-radius: 5px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.2rem;
-    flex-shrink: 0;
-}
-.avatar-bot {
-    background-color: #ef7d38;
-}
-.avatar-user {
-    background-color: transparent;
-}
-.msg-content {
-    max-width: 80%;
-    margin: 0 16px;
-    padding: 1rem 1.2rem;
-    border-radius: 8px;
-    font-size: 0.95rem;
-    line-height: 1.5;
-}
-.msg-bot {
-    background-color: transparent;
-    color: #111;
-    border: none;
-}
-.msg-user {
-    background-color: #ea6c2c;
-    color: #ffffff;
-}
-.time-stamp {
-    font-size: 0.65rem;
-    color: #888;
-    margin-top: 6px;
-}
-.subtext-bot { text-align: left; margin-left: 18px; }
-.subtext-user { text-align: right; margin-right: 18px; }
-
-/* Right Panel */
-.try-asking {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #555;
-    margin-bottom: 1rem;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-.suggested-q {
-    padding: 0.6rem;
-    font-size: 0.85rem;
-    color: #333;
-    margin-bottom: 0.4rem;
-}
-.suggested-q.highlight {
-    background-color: #fff1e5;
-    color: #b05c3b;
-}
-
-/* Input area */
-.send-btn button {
-    background-color: #ea6c2c !important;
-    color: white !important;
-    width: 100%;
-    height: 100%;
-    margin-top: 28px;
-    border: none;
-    border-radius: 5px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# --- Header Top Navigation ---
-st.markdown("""
-<div class="top-header">
-    <div class="header-left">
-        <div class="logo">🛒 1Mart</div>
-        <div class="sublogo">Everything you need, delivered fast</div>
-    </div>
-    <div class="powered-btn">POWERED BY AI</div>
-</div>
-""", unsafe_allow_html=True)
 
 
-# --- Load Models & Default Data ---
-@st.cache_resource(show_spinner="Loading AI Models and Knowledge Base...")
-def load_models_and_data_v2():
-    device = "cpu"
-    # To reduce the footprint for Streamlit, using lightweight or same models referenced
-    embedder = SentenceTransformer("all-MiniLM-L6-v2")
-    tokenizer = T5Tokenizer.from_pretrained("google/flan-t5-base")
-    llm_model = T5ForConditionalGeneration.from_pretrained("google/flan-t5-base").to(device)
-    
-    # Try to autoload default dataset if available
-    default_chunks = []
-    default_index = None
-    default_df = None
-    default_csv = "ecommerce_sales.csv"
-    if os.path.exists(default_csv):
-        try:
-            df = pd.read_csv(default_csv)
-            default_df = df.copy()
-            df = df.fillna('N/A')
-            df.columns = [str(c).strip().lower() for c in df.columns]
-            for _, row in df.iterrows():
-                default_chunks.append(" | ".join([f"{col}: {val}" for col, val in row.items()]))
-            
-            if default_chunks:
-                embs = embedder.encode(default_chunks, convert_to_numpy=True).astype('float32')
-                default_index = faiss.IndexFlatIP(embs.shape[1])
-                faiss.normalize_L2(embs)
-                default_index.add(embs)
-        except Exception as e:
-            print(f"Error loading default CSV: {e}")
+# ─────────────────────────────────────────────────────────────────────────────
+# Model loading (cached)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    return embedder, tokenizer, llm_model, default_chunks, default_index, default_df
+@st.cache_resource(show_spinner="Loading AI models...")
+def load_models():
+    embedder  = SentenceTransformer(EMBEDDER_NAME)
+    tokenizer = T5Tokenizer.from_pretrained(MODEL_NAME)
+    llm       = T5ForConditionalGeneration.from_pretrained(
+        MODEL_NAME,
+        torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32
+    ).to(DEVICE)
+    return embedder, tokenizer, llm
 
-if "models" not in st.session_state:
-    st.session_state.models_loaded = False
-    st.session_state.chunks = []
-    st.session_state.index = None
-    st.session_state.df = None
-    
-def ensure_models():
-    if not st.session_state.models_loaded:
-        st.session_state.emb, st.session_state.tok, st.session_state.llm, def_chunks, def_idx, def_df = load_models_and_data_v2()
-        if def_chunks and def_idx:
-            st.session_state.chunks = def_chunks
-            st.session_state.index = def_idx
-            st.session_state.df = def_df
-            st.session_state.stats["status"] = "🟢 Ready"
-            st.session_state.stats["chunks_count"] = f"{len(def_chunks):,}"
-        st.session_state.models_loaded = True
 
-# --- UI State ---
-if "stats" not in st.session_state:
-    st.session_state.stats = {
-        "chunks_count": "108,300",
-        "embedder": "MiniLM-L6",
-        "llm": "Flan-T5",
-        "status": "🟢 Ready"
-    }
+# ─────────────────────────────────────────────────────────────────────────────
+# Knowledge base builder (cached per file hash)
+# ─────────────────────────────────────────────────────────────────────────────
 
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "bot", "content": "Welcome to 1Mart! I'm ShopAI, your AI shopping assistant. Ask me anything about products, orders, or pricing", "time": "09:00"}
-    ]
+@st.cache_resource(show_spinner="Building knowledge base...")
+def build_kb(file_bytes: bytes, filename: str, _embedder):
+    # Write to temp file
+    suffix = "." + filename.rsplit(".", 1)[-1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
 
-# Call ensure_models right away to prepopulate if default CSV exists
-ensure_models()
+    # Parse
+    ext = filename.rsplit(".", 1)[-1].lower()
+    if ext == "csv":
+        df = pd.read_csv(tmp_path)
+        df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+        df = df.fillna("N/A")
+        # Use natural language blobs for embeddings
+        chunks = [create_text_blob(row) for _, row in df.iterrows()]
+    elif ext in ("xlsx", "xlsm", "xls"):
+        chunks = parse_tabular(tmp_path)
+        df = pd.read_excel(tmp_path)
+    else:
+        with open(tmp_path, "r", encoding="utf-8", errors="ignore") as f:
+            chunks = chunk_text(f.read())
+        df = None
 
-# --- Build FAISS Index dynamically based on uploaded data ---
-def process_data(uploaded_file):
-    try:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        elif uploaded_file.name.endswith((".xls", ".xlsx")):
-            df = pd.read_excel(uploaded_file)
-        else:
-            text = uploaded_file.read().decode("utf-8")
-            chunks = text.split("\\n\\n")
-            st.session_state.chunks = [c for c in chunks if len(c.strip()) > 10]
-            st.session_state.stats["chunks_count"] = f"{len(st.session_state.chunks):,}"
-            update_vector_db()
-            return
+    os.unlink(tmp_path)
 
-        st.session_state.df = df.copy()            
-        df = df.fillna('N/A')
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        # Form chunks per row
-        chunks = []
-        for _, row in df.iterrows():
-            chunks.append(" | ".join([f"{col}: {val}" for col, val in row.items()]))
-        
-        st.session_state.chunks = chunks
-        st.session_state.stats["chunks_count"] = f"{len(chunks):,}"
-        update_vector_db()
-    except Exception as e:
-        st.error(f"Error processing file: {e}")
+    if not chunks:
+        return None, None, None
 
-def update_vector_db():
-    if st.session_state.chunks:
-        embs = st.session_state.emb.encode(st.session_state.chunks, convert_to_numpy=True).astype('float32')
-        idx = faiss.IndexFlatIP(embs.shape[1])
-        faiss.normalize_L2(embs)
-        idx.add(embs)
-        st.session_state.index = idx
-        st.session_state.stats["status"] = "🟢 Ready (Custom Data)"
+    # Embed
+    embeddings = _embedder.encode(
+        chunks, batch_size=256, show_progress_bar=False,
+        convert_to_numpy=True, normalize_embeddings=True
+    ).astype("float32")
 
-# --- Sidebar ---
-with st.sidebar:
-    st.markdown("#### 🛍️ SHOPAI")
-    st.markdown("<p style='font-size:0.8rem; color:#555; margin-top:-10px; margin-bottom: 30px;'>Your intelligent shopping assistant</p>", unsafe_allow_html=True)
-    
-    st.markdown("<p style='font-size:0.75rem; font-weight:700; color:#555; letter-spacing:1px; margin-bottom:5px;'>SYSTEM STATUS</p>", unsafe_allow_html=True)
-    
-    st.markdown(f"""
-    <table class="sys-status-table">
-        <tr><td style="color:#222;">Bot</td><td><span style="color:#2ca042;">{st.session_state.stats['status']}</span></td></tr>
-        <tr><td style="color:#222;">Store</td><td>1Mart</td></tr>
-        <tr><td style="color:#222;">Chunks</td><td>{st.session_state.stats['chunks_count']}</td></tr>
-        <tr><td style="color:#222;">LLM</td><td>{st.session_state.stats['llm']}</td></tr>
-        <tr><td style="color:#222;">Embedder</td><td>{st.session_state.stats['embedder']}</td></tr>
-        <tr><td style="color:#222;">Vector DB</td><td>FAISS</td></tr>
-    </table>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("<p style='font-size:0.75rem; font-weight:700; color:#555; letter-spacing:1px; margin-top:20px; margin-bottom:5px;'>📂 UPLOAD DATA</p>", unsafe_allow_html=True)
-    
-    uploaded_file = st.file_uploader("CSV / Excel / TXT drop files here", label_visibility="collapsed")
-    
-    st.markdown('<div class="build-kb-btn">', unsafe_allow_html=True)
-    if st.button("➕ Build Knowledge Base", use_container_width=True):
-        if uploaded_file:
-            process_data(uploaded_file)
-            st.success("Knowledge Base Built Successfully.")
-            st.session_state.stats["status"] = "🟢 Ready (Custom Data)"
-        else:
-            pass
-    st.markdown('</div>', unsafe_allow_html=True)
-            
-    st.markdown("""
-    <div class="rag-notice">
-        ShopAI uses RAG to answer from 1Mart's own data — no hallucinations, no internet.
-    </div>
-    <div style="font-size: 0.65rem; color: #888; text-align: center; margin-top: 1.5rem; line-height:1.6;">
-        Built with ♥ for 1Mart<br/>
-        RAG &nbsp; FAISS &nbsp; Flan-T5 &nbsp; Streamlit
-    </div>
-    """, unsafe_allow_html=True)
+    # FAISS index
+    dim = embeddings.shape[1]
+    n   = len(chunks)
+    if n < 10_000:
+        index = faiss.IndexFlatIP(dim)
+    else:
+        nlist = min(256, n // 100)
+        q     = faiss.IndexFlatIP(dim)
+        index = faiss.IndexIVFFlat(q, dim, nlist, faiss.METRIC_INNER_PRODUCT)
+        index.train(embeddings)
+        index.nprobe = 16
+    index.add(embeddings)
 
-# --- Layout ---
-col_chat, col_sugg = st.columns([2.5, 1], gap="large")
+    return chunks, index, df
 
-with col_chat:
-    st.markdown("<div style='margin-bottom: 2rem;'><span style='font-weight: 500; font-size: 1.1rem; color: #333;'>ShopAI — 1Mart Assistant</span><br/><span style='font-size: 0.85rem; color: #1f9c3f;'>● Online</span><span style='font-size:0.85rem; color: #777;'> · Ask about orders, products & pricing</span></div>", unsafe_allow_html=True)
-    
-    # Render messages
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RAG answer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def retrieve_context(query, chunks, index, embedder, top_k=5):
+    q_vec = embedder.encode([query], convert_to_numpy=True,
+                             normalize_embeddings=True).astype("float32")
+    scores, indices = index.search(q_vec, top_k)
+    return [chunks[i] for s, i in zip(scores[0], indices[0])
+            if i != -1 and float(s) > 0.25]
+
+
+def build_prompt(query, ctx):
+    body = "\n".join(f"- {c}" for c in ctx[:5])
+    return (
+        "You are ShopAI, a helpful 1Mart e-commerce support assistant.\n"
+        "Use ONLY the context below to answer accurately.\n"
+        "Always include the $ currency symbol for any price, revenue, or order value.\n"
+        "If the answer is not in the context, say: "
+        "'I don't have that information. Please contact 1Mart support.'\n\n"
+        f"Context:\n{body}\n\nCustomer question: {query}\n\nAnswer:"
+    )
+
+
+def generate_answer(prompt, tokenizer, llm, max_new_tokens=200):
+    inputs = tokenizer(prompt, return_tensors="pt",
+                       max_length=1024, truncation=True).to(DEVICE)
+    with torch.no_grad():
+        out = llm.generate(
+            **inputs, max_new_tokens=max_new_tokens,
+            num_beams=4, early_stopping=True, no_repeat_ngram_size=3,
+        )
+    return tokenizer.decode(out[0], skip_special_tokens=True).strip()
+
+
+def get_answer(query, chunks, index, df, embedder, tokenizer, llm):
+    """Full pipeline: data → math → RAG"""
+    if not query.strip():
+        return "Please enter a question."
+
+    # 1. Direct data query
+    ans = try_data_query(query, df)
+    if ans:
+        return ans
+
+    # 2. Simple math
+    ans = try_math(query)
+    if ans:
+        return ans
+
+    # 3. RAG
+    ctx = retrieve_context(query, chunks, index, embedder)
+    if not ctx:
+        return "I couldn't find relevant information. Please contact 1Mart support."
+    answer = generate_answer(build_prompt(query, ctx), tokenizer, llm)
+    return format_currency_in_answer(answer)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
+    # Sidebar
+    with st.sidebar:
+        st.markdown("## 🛒 SHOPAI")
+        st.caption("Your intelligent shopping assistant")
+        st.divider()
+
+        st.markdown("### SYSTEM STATUS")
+        col1, col2 = st.columns(2)
+        col1.markdown("**Bot**");      col2.markdown("🟢 Ready")
+        col1.markdown("**Store**");    col2.markdown("🟠 1Mart")
+        col1.markdown("**LLM**");      col2.markdown("🟠 Flan-T5")
+        col1.markdown("**Embedder**"); col2.markdown("🟠 MiniLM-L6")
+        col1.markdown("**Vector DB**");col2.markdown("🟠 FAISS")
+        st.divider()
+
+        st.markdown("### UPLOAD DATA")
+        uploaded_files = st.file_uploader(
+            "Upload CSV or Excel",
+            type=["csv", "xlsx", "xls"],
+            accept_multiple_files=True
+        )
+
+        build_btn = st.button("⚡ Build Knowledge Base", use_container_width=True)
+        st.divider()
+
+        st.markdown("### ℹ️ ABOUT")
+        st.caption("Upload ecommerce_sales.csv or any Excel/text file to power the bot with your own data.")
+
+    # Load models
+    embedder, tokenizer, llm = load_models()
+
+    # Session state
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {"role": "assistant",
+             "content": "Welcome to 1Mart! I'm ShopAI, your AI shopping assistant. Ask me anything about products, orders, or pricing."}
+        ]
+    if "kb_built" not in st.session_state:
+        st.session_state.kb_built  = False
+        st.session_state.chunks    = None
+        st.session_state.index     = None
+        st.session_state.df        = None
+
+    # Build KB
+    if build_btn and uploaded_files:
+        all_chunks, combined_df = [], []
+        final_index = None
+
+        for uf in uploaded_files:
+            file_bytes = uf.read()
+            chunks, idx, df = build_kb(file_bytes, uf.name, embedder)
+            if chunks:
+                all_chunks.extend(chunks)
+                if df is not None:
+                    combined_df.append(df)
+
+        if all_chunks:
+            # Rebuild single FAISS index over all chunks
+            all_emb = embedder.encode(
+                all_chunks, batch_size=256, show_progress_bar=False,
+                convert_to_numpy=True, normalize_embeddings=True
+            ).astype("float32")
+            dim, n = all_emb.shape[1], len(all_chunks)
+            if n < 10_000:
+                final_index = faiss.IndexFlatIP(dim)
+            else:
+                nlist = min(256, n // 100)
+                q     = faiss.IndexFlatIP(dim)
+                final_index = faiss.IndexIVFFlat(q, dim, nlist, faiss.METRIC_INNER_PRODUCT)
+                final_index.train(all_emb)
+                final_index.nprobe = 16
+            final_index.add(all_emb)
+
+            st.session_state.chunks   = all_chunks
+            st.session_state.index    = final_index
+            st.session_state.df       = pd.concat(combined_df, ignore_index=True) if combined_df else None
+            st.session_state.kb_built = True
+            st.sidebar.success(f"✅ Knowledge base ready — {len(all_chunks):,} chunks")
+
+    # Suggested questions
+    with st.sidebar:
+        st.markdown("### 💡 Try asking")
+        suggestions = [
+            "What is total revenue?",
+            "Which country has most orders?",
+            "Who are top customers?",
+            "Most popular product?",
+            "Orders from India",
+            "Products available?",
+        ]
+        for s in suggestions:
+            if st.button(s, key=f"sug_{s}", use_container_width=True):
+                st.session_state._pending = s
+
+    # Main chat area
+    st.markdown("## 🛒 ShopAI — 1Mart Assistant")
+
     for msg in st.session_state.messages:
-        if msg["role"] == "bot":
-            html = f"""
-            <div class="chat-row chat-bot">
-                <div class="avatar avatar-bot">🤖</div>
-                <div>
-                    <div class="msg-content msg-bot">{msg['content']}</div>
-                    <div class="time-stamp subtext-bot">{msg.get('time', '09:00')}</div>
-                </div>
-            </div>
-            """
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    # Handle suggestion click
+    pending = st.session_state.pop("_pending", None)
+    user_input = st.chat_input("Ask ShopAI anything...") or pending
+
+    if user_input:
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.write(user_input)
+
+        if not st.session_state.kb_built:
+            answer = "Please upload your data file and click **Build Knowledge Base** first."
         else:
-            html = f"""
-            <div class="chat-row chat-user">
-                <div class="avatar avatar-user">👤</div>
-                <div>
-                    <div class="msg-content msg-user">{msg['content']}</div>
-                    <div class="time-stamp subtext-user">{msg.get('time', '09:01')}</div>
-                </div>
-            </div>
-            """
-        st.markdown(html, unsafe_allow_html=True)
-        
-    st.write("") # spacing
-    st.write("") # spacing
-    
-    # Input area via form
-    with st.form("chat_form", clear_on_submit=True):
-        c1, c2 = st.columns([6, 1])
-        with c1:
-            user_input = st.text_input("Ask ShopAI anything...", label_visibility="collapsed", placeholder="Ask ShopAI anything...")
-        with c2:
-            st.markdown('<div class="send-btn">', unsafe_allow_html=True)
-            submitBtn = st.form_submit_button("Send →")
-            st.markdown('</div>', unsafe_allow_html=True)
+            with st.spinner("ShopAI is thinking..."):
+                answer = get_answer(
+                    user_input,
+                    st.session_state.chunks,
+                    st.session_state.index,
+                    st.session_state.df,
+                    embedder, tokenizer, llm
+                )
 
-    if submitBtn and user_input:
-        st.session_state.messages.append({"role": "user", "content": user_input, "time": "09:01"})
-        
-        lower_input = user_input.lower()
-        
-        math_answer = try_math(lower_input)
-        if math_answer:
-            ans = math_answer
-        # Mock answers for exact screenshot match
-        elif "vr headset" in lower_input:
-            ans = "The VR Headset is priced at $499.00 per unit. Multiple customers across India, Germany, and the UK have purchased it — it's one of our top selling electronics!"
-        elif "most orders" in lower_input and not "how many" in lower_input:
-            ans = "Based on our dataset, India has the highest number of orders, followed by the UK and Germany."
-        else:
-            with st.spinner("Analyzing..."):
-                ensure_models()
-                
-                analytical_facts = []
-                if hasattr(st.session_state, 'df') and st.session_state.df is not None:
-                    try:
-                        df = st.session_state.df
-                        # Dynamic column mapper for user uploads
-                        col_cust = next((c for c in df.columns if any(k in c for k in ['customer', 'name', 'client', 'buyer'])), None)
-                        col_prod = next((c for c in df.columns if any(k in c for k in ['product', 'item', 'category', 'goods'])), None)
-                        col_rev = next((c for c in df.columns if any(k in c for k in ['sales', 'revenue', 'value', 'price', 'total', 'amount'])), None)
-                        col_country = next((c for c in df.columns if any(k in c for k in ['country', 'region', 'state', 'location', 'city'])), None)
-                        
-                        if "top" in lower_input and "customer" in lower_input:
-                            if col_cust:
-                                top_custs = df[col_cust].value_counts().head(3)
-                                top_str = ", ".join(f"{name} ({count} orders)" for name, count in top_custs.items())
-                                analytical_facts.append(f"Our top customers are: {top_str}.")
-                                
-                        if "popular" in lower_input or "top product" in lower_input:
-                            if col_prod:
-                                top_prods = df[col_prod].value_counts().head(3).index.tolist()
-                                analytical_facts.append(f"The most popular products are: {', '.join(str(x) for x in top_prods)}.")
-                                
-                        if "product" in lower_input and any(kw in lower_input for kw in ["available", "list", "what", "which"]):
-                            if col_prod:
-                                unique_products = df[col_prod].dropna().unique().tolist()
-                                if len(unique_products) < 20:
-                                    analytical_facts.append(f"We currently offer the following products: {', '.join(map(str, unique_products))}.")
-                                else:
-                                    analytical_facts.append(f"We offer over {len(unique_products)} different products.")
-                                    
-                        if "how many products" in lower_input or "count products" in lower_input:
-                            if col_prod:
-                                analytical_facts.append(f"There are {df[col_prod].nunique()} unique products in the catalog.")
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        with st.chat_message("assistant"):
+            st.write(answer)
 
-                        # Overall revenue
-                        if ("revenue" in lower_input or "total sales" in lower_input or "total sum" in lower_input) and "country" not in lower_input and not re.search(r"(revenue|sales|value).{0,15}(of|for)\s+", lower_input):
-                            if col_rev:
-                                val = pd.to_numeric(df[col_rev], errors='coerce').sum()
-                                analytical_facts.append(f"The total overall revenue/sales is ${val:,.2f}.")
-                                
-                        if any(kw in lower_input for kw in ["average order", "avg order", "mean order", "average revenue", "avg revenue"]):
-                            if col_rev:
-                                val = pd.to_numeric(df[col_rev], errors='coerce').mean()
-                                analytical_facts.append(f"The average order value is ${val:,.2f}.")
-                                
-                        product_rev = re.search(r"(revenue|sales|value).{0,15}(of|for)\s+([a-zA-Z0-9\s]+?)(\?|$)", lower_input)
-                        if product_rev and col_prod and col_rev:
-                            prod_name = product_rev.group(3).strip().title()
-                            filtered = df[df[col_prod].astype(str).str.title().str.contains(prod_name, case=False, na=False)]
-                            if not filtered.empty:
-                                rev = pd.to_numeric(filtered[col_rev], errors='coerce').sum()
-                                analytical_facts.append(f"{prod_name} has {len(filtered):,} orders with total revenue of ${rev:,.2f}.")
-                               
-                        if any(kw in lower_input for kw in ['total', 'sum', 'count', 'how many', 'revenue', 'customers', 'orders']):
-                            if col_country:
-                                for country in df[col_country].dropna().unique():
-                                    if str(country).lower() in lower_input:
-                                        c_df = df[df[col_country].astype(str).str.contains(str(country), case=False, na=False)]
-                                        if 'count' in lower_input or 'customers' in lower_input or 'how many' in lower_input:
-                                            analytical_facts.append(f"There are {len(c_df)} total customer orders in {country}.")
-                                        if 'sum' in lower_input or 'total' in lower_input or 'revenue' in lower_input:
-                                            if col_rev:
-                                                val = pd.to_numeric(c_df[col_rev], errors='coerce').sum()
-                                                analytical_facts.append(f"The total revenue for {country} is ${val:,.2f}.")
-                            if "sum by" in lower_input or "total by" in lower_input or "revenue by" in lower_input:
-                                if col_rev and col_country:
-                                    summary = df.groupby(col_country)[col_rev].apply(lambda x: pd.to_numeric(x, errors='coerce').sum())
-                                    summary_str = ", ".join([f"{k}: ${v:,.2f}" for k, v in summary.items()])
-                                    analytical_facts.append(f"Here is the data breakdown: {summary_str}.")
-                    except Exception as e:
-                        print("Pandas Router Error:", e)
 
-                if st.session_state.index and st.session_state.chunks:
-                    emb = st.session_state.emb.encode([user_input], convert_to_numpy=True).astype('float32')
-                    faiss.normalize_L2(emb)
-                    _, I = st.session_state.index.search(emb, 3)
-                    ctx = "\\n".join([st.session_state.chunks[i] for i in I[0] if i != -1])
-                    
-                    prompt_ctx = ctx
-                    if analytical_facts:
-                        prompt_ctx = "Exact calculation results from the database:\\n" + "\\n".join(analytical_facts) + "\\n\\nRelated Context:\\n" + ctx
-                else:
-                    prompt_ctx = "We have 108,300 product and sales records."
-                
-                # We skip LLM generation if we have a direct, perfectly formatted analytical fact that completely answers a list-type question,
-                # as FLAN-T5-base struggles heavily with repeating facts properly without tautologies.
-                if analytical_facts and any(k in lower_input for k in ["top", "popular", "summary", "available", "list", "total", "sum", "count", "how many"]):
-                    ans = "📊 **Dashboard Insights:**\\n" + "\\n\\n".join(analytical_facts)
-                else:
-                    prompt = f"Answer the customer's question using ONLY the provided context.\\nContext:\\n{prompt_ctx}\\nQuestion: {user_input}\\nAnswer:"
-                    inputs = st.session_state.tok(prompt, return_tensors='pt', max_length=512, truncation=True)
-                    with torch.no_grad():
-                        out = st.session_state.llm.generate(**inputs, max_new_tokens=150)
-                    ans = st.session_state.tok.decode(out[0], skip_special_tokens=True).strip()
-                    ans = format_currency_in_answer(ans)
-                    if analytical_facts:
-                        ans = "📊 **Dashboard Insights:**\\n" + "\\n".join(analytical_facts) + "\\n\\n" + ans
-                    if not ans or ans == "I don't have that information.":
-                        ans = "I don't have that information. Please contact 1Mart support."
-                
-        st.session_state.messages.append({"role": "bot", "content": ans, "time": "09:02"})
-        st.rerun()
-
-with col_sugg:
-    st.markdown("<div class='try-asking'>💡 TRY ASKING</div>", unsafe_allow_html=True)
-    
-    suggested = [
-        "Price of a VR Headset?",
-        "Which country has most orders?",
-        "Who are top customers?",
-        "What is total revenue?",
-        "Smartphone flagship info",
-        "Products available?",
-        "Orders from India",
-        "Most popular product?"
-    ]
-    
-    for i, sq in enumerate(suggested):
-        cls = "suggested-q highlight" if i == 0 else "suggested-q"
-        st.markdown(f"<div class='{cls}'>{sq}</div>", unsafe_allow_html=True)
-        
-    st.markdown("<br/>", unsafe_allow_html=True)
-    st.markdown("<div class='try-asking'>ℹ️ ABOUT</div>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size: 0.85rem; color: #444; line-height:1.5;'>Upload ecommerce_sales.csv or any Excel/text file to power the bot with your own data.</div>", unsafe_allow_html=True)
+if __name__ == "__main__":
+    main()
