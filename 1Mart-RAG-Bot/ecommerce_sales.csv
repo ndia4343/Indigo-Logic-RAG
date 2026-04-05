@@ -1,0 +1,7 @@
+order_id,customer_name,country,products,price,quantity,order_value,date
+1001,John Doe,USA,VR Headset,499.00,1,499.00,2023-10-01
+1002,Jane Smith,India,Smartphone,799.00,2,1598.00,2023-10-02
+1003,Rahul Dravid,India,Smartphone,799.00,1,799.00,2023-10-03
+1004,Alice Cooper,UK,VR Headset,499.00,1,499.00,2023-10-04
+1005,Bob Marley,Germany,VR Headset,499.00,1,499.00,2023-10-05
+1006,Sachin Tendulkar,India,Wireless Earbuds,129.00,3,387.00,2023-10-06

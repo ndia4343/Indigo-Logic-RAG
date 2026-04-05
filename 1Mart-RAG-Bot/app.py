@@ -191,15 +191,36 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# --- Load Models ---
-@st.cache_resource(show_spinner="Loading Embedded & LLM Models...")
-def load_models():
+# --- Load Models & Default Data ---
+@st.cache_resource(show_spinner="Loading AI Models and Knowledge Base...")
+def load_models_and_data():
     device = "cpu"
     # To reduce the footprint for Streamlit, using lightweight or same models referenced
     embedder = SentenceTransformer("all-MiniLM-L6-v2")
     tokenizer = T5Tokenizer.from_pretrained("google/flan-t5-base")
     llm_model = T5ForConditionalGeneration.from_pretrained("google/flan-t5-base").to(device)
-    return embedder, tokenizer, llm_model
+    
+    # Try to autoload default dataset if available
+    default_chunks = []
+    default_index = None
+    default_csv = "ecommerce_sales.csv"
+    if os.path.exists(default_csv):
+        try:
+            df = pd.read_csv(default_csv)
+            df = df.fillna('N/A')
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            for _, row in df.iterrows():
+                default_chunks.append(" | ".join([f"{col}: {val}" for col, val in row.items()]))
+            
+            if default_chunks:
+                embs = embedder.encode(default_chunks, convert_to_numpy=True).astype('float32')
+                default_index = faiss.IndexFlatIP(embs.shape[1])
+                faiss.normalize_L2(embs)
+                default_index.add(embs)
+        except Exception as e:
+            print(f"Error loading default CSV: {e}")
+
+    return embedder, tokenizer, llm_model, default_chunks, default_index
 
 if "models" not in st.session_state:
     st.session_state.models_loaded = False
@@ -208,7 +229,12 @@ if "models" not in st.session_state:
     
 def ensure_models():
     if not st.session_state.models_loaded:
-        st.session_state.emb, st.session_state.tok, st.session_state.llm = load_models()
+        st.session_state.emb, st.session_state.tok, st.session_state.llm, def_chunks, def_idx = load_models_and_data()
+        if def_chunks and def_idx:
+            st.session_state.chunks = def_chunks
+            st.session_state.index = def_idx
+            st.session_state.stats["status"] = "🟢 Ready"
+            st.session_state.stats["chunks_count"] = f"{len(def_chunks):,}"
         st.session_state.models_loaded = True
 
 # --- UI State ---
@@ -224,6 +250,46 @@ if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "bot", "content": "Welcome to 1Mart! I'm ShopAI, your AI shopping assistant. Ask me anything about products, orders, or pricing", "time": "09:00"}
     ]
+
+# Call ensure_models right away to prepopulate if default CSV exists
+ensure_models()
+
+# --- Build FAISS Index dynamically based on uploaded data ---
+def process_data(uploaded_file):
+    try:
+        if uploaded_file.name.endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+        elif uploaded_file.name.endswith((".xls", ".xlsx")):
+            df = pd.read_excel(uploaded_file)
+        else:
+            text = uploaded_file.read().decode("utf-8")
+            chunks = text.split("\\n\\n")
+            st.session_state.chunks = [c for c in chunks if len(c.strip()) > 10]
+            st.session_state.stats["chunks_count"] = f"{len(st.session_state.chunks):,}"
+            update_vector_db()
+            return
+            
+        df = df.fillna('N/A')
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        # Form chunks per row
+        chunks = []
+        for _, row in df.iterrows():
+            chunks.append(" | ".join([f"{col}: {val}" for col, val in row.items()]))
+        
+        st.session_state.chunks = chunks
+        st.session_state.stats["chunks_count"] = f"{len(chunks):,}"
+        update_vector_db()
+    except Exception as e:
+        st.error(f"Error processing file: {e}")
+
+def update_vector_db():
+    if st.session_state.chunks:
+        embs = st.session_state.emb.encode(st.session_state.chunks, convert_to_numpy=True).astype('float32')
+        idx = faiss.IndexFlatIP(embs.shape[1])
+        faiss.normalize_L2(embs)
+        idx.add(embs)
+        st.session_state.index = idx
+        st.session_state.stats["status"] = "🟢 Ready (Custom Data)"
 
 # --- Sidebar ---
 with st.sidebar:
@@ -250,8 +316,9 @@ with st.sidebar:
     st.markdown('<div class="build-kb-btn">', unsafe_allow_html=True)
     if st.button("➕ Build Knowledge Base", use_container_width=True):
         if uploaded_file:
-            st.success("Knolwledge Base Built Successfully.")
-            st.session_state.stats["status"] = "Ready (Custom Data)"
+            process_data(uploaded_file)
+            st.success("Knowledge Base Built Successfully.")
+            st.session_state.stats["status"] = "🟢 Ready (Custom Data)"
         else:
             pass
     st.markdown('</div>', unsafe_allow_html=True)
@@ -320,9 +387,22 @@ with col_chat:
             ans = "Based on our dataset, India has the highest number of orders, followed by the UK and Germany."
         else:
             with st.spinner("Analyzing..."):
-                ensure_models()
-                # Dummy vector db search for production testing or generic query handling
-                ans = "I found some relevant information based on our 1Mart catalog, but to get a specific answer, please ensure data is uploaded."
+                if st.session_state.index and st.session_state.chunks:
+                    emb = st.session_state.emb.encode([user_input], convert_to_numpy=True).astype('float32')
+                    faiss.normalize_L2(emb)
+                    _, I = st.session_state.index.search(emb, 3)
+                    ctx = "\\n".join([st.session_state.chunks[i] for i in I[0] if i != -1])
+                    if not ctx: ctx = "No relevant context found."
+                else:
+                    ctx = "We have 108,300 product and sales records."
+                
+                prompt = f"Answer the customer's question using ONLY the provided context.\\nContext:\\n{ctx}\\nQuestion: {user_input}\\nAnswer:"
+                inputs = st.session_state.tok(prompt, return_tensors='pt', max_length=512, truncation=True)
+                with torch.no_grad():
+                    out = st.session_state.llm.generate(**inputs, max_new_tokens=100)
+                ans = st.session_state.tok.decode(out[0], skip_special_tokens=True).strip()
+                if not ans:
+                    ans = "I don't have that information. Please contact 1Mart support."
                 
         st.session_state.messages.append({"role": "bot", "content": ans, "time": "09:02"})
         st.rerun()
