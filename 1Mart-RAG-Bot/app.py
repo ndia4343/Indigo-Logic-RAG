@@ -473,11 +473,24 @@ with col_chat:
                                 analytical_facts.append(f"There are {df[col_prod].nunique()} unique products in the catalog.")
 
                         # Overall revenue
-                        if ("revenue" in lower_input or "total sales" in lower_input or "total sum" in lower_input) and "country" not in lower_input:
+                        if ("revenue" in lower_input or "total sales" in lower_input or "total sum" in lower_input) and "country" not in lower_input and not re.search(r"(revenue|sales|value).{0,15}(of|for)\s+", lower_input):
                             if col_rev:
                                 val = pd.to_numeric(df[col_rev], errors='coerce').sum()
                                 analytical_facts.append(f"The total overall revenue/sales is ${val:,.2f}.")
                                 
+                        if any(kw in lower_input for kw in ["average order", "avg order", "mean order", "average revenue", "avg revenue"]):
+                            if col_rev:
+                                val = pd.to_numeric(df[col_rev], errors='coerce').mean()
+                                analytical_facts.append(f"The average order value is ${val:,.2f}.")
+                                
+                        product_rev = re.search(r"(revenue|sales|value).{0,15}(of|for)\s+([a-zA-Z0-9\s]+?)(\?|$)", lower_input)
+                        if product_rev and col_prod and col_rev:
+                            prod_name = product_rev.group(3).strip().title()
+                            filtered = df[df[col_prod].astype(str).str.title().str.contains(prod_name, case=False, na=False)]
+                            if not filtered.empty:
+                                rev = pd.to_numeric(filtered[col_rev], errors='coerce').sum()
+                                analytical_facts.append(f"{prod_name} has {len(filtered):,} orders with total revenue of ${rev:,.2f}.")
+                               
                         if any(kw in lower_input for kw in ['total', 'sum', 'count', 'how many', 'revenue', 'customers', 'orders']):
                             if col_country:
                                 for country in df[col_country].dropna().unique():
