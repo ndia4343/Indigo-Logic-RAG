@@ -203,10 +203,12 @@ def load_models_and_data():
     # Try to autoload default dataset if available
     default_chunks = []
     default_index = None
+    default_df = None
     default_csv = "ecommerce_sales.csv"
     if os.path.exists(default_csv):
         try:
             df = pd.read_csv(default_csv)
+            default_df = df.copy()
             df = df.fillna('N/A')
             df.columns = [str(c).strip().lower() for c in df.columns]
             for _, row in df.iterrows():
@@ -220,19 +222,21 @@ def load_models_and_data():
         except Exception as e:
             print(f"Error loading default CSV: {e}")
 
-    return embedder, tokenizer, llm_model, default_chunks, default_index
+    return embedder, tokenizer, llm_model, default_chunks, default_index, default_df
 
 if "models" not in st.session_state:
     st.session_state.models_loaded = False
     st.session_state.chunks = []
     st.session_state.index = None
+    st.session_state.df = None
     
 def ensure_models():
     if not st.session_state.models_loaded:
-        st.session_state.emb, st.session_state.tok, st.session_state.llm, def_chunks, def_idx = load_models_and_data()
+        st.session_state.emb, st.session_state.tok, st.session_state.llm, def_chunks, def_idx, def_df = load_models_and_data()
         if def_chunks and def_idx:
             st.session_state.chunks = def_chunks
             st.session_state.index = def_idx
+            st.session_state.df = def_df
             st.session_state.stats["status"] = "🟢 Ready"
             st.session_state.stats["chunks_count"] = f"{len(def_chunks):,}"
         st.session_state.models_loaded = True
@@ -268,7 +272,8 @@ def process_data(uploaded_file):
             st.session_state.stats["chunks_count"] = f"{len(st.session_state.chunks):,}"
             update_vector_db()
             return
-            
+
+        st.session_state.df = df.copy()            
         df = df.fillna('N/A')
         df.columns = [str(c).strip().lower() for c in df.columns]
         # Form chunks per row
@@ -383,15 +388,44 @@ with col_chat:
         # Mock answers for exact screenshot match
         if "vr headset" in lower_input:
             ans = "The VR Headset is priced at $499.00 per unit. Multiple customers across India, Germany, and the UK have purchased it — it's one of our top selling electronics!"
-        elif "most orders" in lower_input:
+        elif "most orders" in lower_input and not "how many" in lower_input:
             ans = "Based on our dataset, India has the highest number of orders, followed by the UK and Germany."
         else:
             with st.spinner("Analyzing..."):
+                ensure_models()
+                
+                analytical_facts = []
+                if hasattr(st.session_state, 'df') and st.session_state.df is not None:
+                    try:
+                        df = st.session_state.df
+                        # Simple rule-based Pandas aggregator
+                        if any(kw in lower_input for kw in ['total', 'sum', 'count', 'how many', 'revenue', 'customers', 'orders']):
+                            if 'country' in df.columns:
+                                for country in df['country'].dropna().unique():
+                                    if str(country).lower() in lower_input:
+                                        c_df = df[df['country'].astype(str).str.contains(str(country), case=False, na=False)]
+                                        if 'count' in lower_input or 'customers' in lower_input or 'how many' in lower_input:
+                                            analytical_facts.append(f"There are {len(c_df)} total customer orders in {country}.")
+                                        if 'sum' in lower_input or 'total' in lower_input or 'revenue' in lower_input:
+                                            if 'order_value' in df.columns:
+                                                val = pd.to_numeric(c_df['order_value'], errors='coerce').sum()
+                                                analytical_facts.append(f"The total revenue for {country} is ${val:,.2f}.")
+                            if "sum by country" in lower_input or "total by country" in lower_input or "revenue by country" in lower_input:
+                                if 'order_value' in df.columns and 'country' in df.columns:
+                                    summary = df.groupby('country')['order_value'].apply(lambda x: pd.to_numeric(x, errors='coerce').sum()).to_dict()
+                                    analytical_facts.append(f"Here is the total revenue by country: {summary}.")
+                    except Exception as e:
+                        print("Pandas Router Error:", e)
+
                 if st.session_state.index and st.session_state.chunks:
                     emb = st.session_state.emb.encode([user_input], convert_to_numpy=True).astype('float32')
                     faiss.normalize_L2(emb)
                     _, I = st.session_state.index.search(emb, 3)
                     ctx = "\\n".join([st.session_state.chunks[i] for i in I[0] if i != -1])
+                    
+                    if analytical_facts:
+                        ctx = "Exact calculation results from the database:\\n" + "\\n".join(analytical_facts) + "\\n\\nRelated Context:\\n" + ctx
+                    
                     if not ctx: ctx = "No relevant context found."
                 else:
                     ctx = "We have 108,300 product and sales records."
@@ -399,7 +433,7 @@ with col_chat:
                 prompt = f"Answer the customer's question using ONLY the provided context.\\nContext:\\n{ctx}\\nQuestion: {user_input}\\nAnswer:"
                 inputs = st.session_state.tok(prompt, return_tensors='pt', max_length=512, truncation=True)
                 with torch.no_grad():
-                    out = st.session_state.llm.generate(**inputs, max_new_tokens=100)
+                    out = st.session_state.llm.generate(**inputs, max_new_tokens=150)
                 ans = st.session_state.tok.decode(out[0], skip_special_tokens=True).strip()
                 if not ans:
                     ans = "I don't have that information. Please contact 1Mart support."
