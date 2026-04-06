@@ -81,7 +81,7 @@ app.post('/api/chat', async (req, res) => {
         
         const model = genAI.getGenerativeModel({ 
             model: modelName, 
-            systemInstruction: "You are a strict data analysis chatbot. Answer the user's question USING ONLY the provided Document Context below. If the answer is not in the context, do not use outside knowledge. Simply reply: 'I cannot find the answer in the provided documents.'"
+            systemInstruction: "You are an Expert Portfolio Data Analyst. \n\n1. DATA IDENTIFICATION: \n- 'CarPrices.csv' is based on the UCI Automobile Dataset. Currency is US Dollars (USD).\n- 'ecommerce_data.csv' is standard retail sample data. Currency is US Dollars (USD).\n\n2. FORMATTING RULES:\n- Professional, structured reports.\n- Highlight Currency context ($).\n- Include a Summary Table for datasets.\n\n3. ANSWERING: Answer using the context. Assume Dollars ($) for prices unless explicitly stated otherwise."
         });
 
         // Map our simple history format to the Gemini SDK format
@@ -94,19 +94,15 @@ app.post('/api/chat', async (req, res) => {
         // Always put the context in the current prompt for the most accurate document grounding
         const finalPrompt = `Document Context:\n${uploaded_context}\n\nUser Question: ${query}`;
         
-        // Add the current prompt to the set of contents
-        const contents = [
-            ...historyParts,
-            { role: "user", parts: [{ text: finalPrompt }] }
-        ];
+        // Token-Efficient Prompt: Send context only with CURRENT question
+        const optimizedQuery = `Document Context:\n${req.body.context || uploaded_context}\n\nUser Question: ${query}`;
 
-        const result = await model.generateContent({
-            contents: contents,
-            generationConfig: {
-                temperature: parseFloat(temperature),
-            }
+        const chat = model.startChat({
+            history: historyParts,
+            generationConfig: { temperature: parseFloat(temperature) }
         });
-        
+
+        const result = await chat.sendMessage(optimizedQuery);
         const response = await result.response;
         res.json({ response: response.text() });
 
